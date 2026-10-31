@@ -1,0 +1,38 @@
+"use strict";
+const $=s=>document.querySelector(s), STAT=["New","Qualified","Contacted","Follow-up","Interested","Converted","Rejected"];
+let T=sessionStorage.getItem("t")||"",tab="dashboard",page=1,f={search:"",status:""};
+const h=(t,p={},...c)=>{const e=document.createElement(t);for(const[k,v]of Object.entries(p))k.startsWith("on")?e.addEventListener(k.slice(2),v):e[k]=v;e.append(...c);return e};
+function toast(m,bad){const t=h("div",{className:"toast"+(bad?" bad":"")},m);document.body.append(t);setTimeout(()=>t.remove(),3500)}
+async function api(p,o={}){const r=await fetch("/api"+p,{method:o.method||"GET",headers:{"Content-Type":o.raw!=null?"text/csv":"application/json",...(T?{Authorization:"Bearer "+T}:{})},body:o.raw!=null?o.raw:(o.body?JSON.stringify(o.body):undefined)});let d={};try{d=await r.json()}catch{}if(r.status===401&&T)logout();return{ok:r.ok,d}}
+function logout(){T="";sessionStorage.removeItem("t");render()}
+const pickCsv=cb=>{const i=h("input",{type:"file",accept:".csv",onchange:async e=>{const x=e.target.files[0];if(x)cb(await x.text())}});i.click()};
+function authView(){const em=h("input",{type:"email",placeholder:"Email",autocomplete:"username"}),pw=h("input",{type:"password",placeholder:"Password (min 10 chars)",autocomplete:"current-password"}),org=h("input",{placeholder:"Organization name (new accounts only)"});
+ const go=async p=>{const r=await api(p,{method:"POST",body:{email:em.value,password:pw.value,org_name:org.value}});if(r.ok){T=r.d.token;sessionStorage.setItem("t",T);render()}else toast(r.d.error||"Failed",true)};
+ return h("div",{className:"auth"},h("h1",{},"LeadPilot AI"),h("p",{className:"muted"},"Sign in or create a workspace"),em,pw,org,h("div",{className:"row"},h("button",{onclick:()=>go("/auth/login")},"Sign in"),h("button",{className:"ghost",onclick:()=>go("/auth/register")},"Create workspace")))}
+async function dashView(){const{d}=await api("/dashboard"),card=(l,v)=>h("div",{className:"card"},h("div",{className:"muted"},l),h("div",{className:"big"},String(v)));
+ const bars=o=>{const m=Math.max(1,...Object.values(o));return h("div",{},...Object.entries(o).map(([k,v])=>h("div",{className:"bar"},h("span",{},k),h("i",{style:`width:${v/m*100}%`}),h("b",{},String(v)))))};
+ return h("div",{},h("div",{className:"cards"},card("Total leads",d.total),card("New today",d.new_today),card("Qualified",d.by_status.Qualified),card("Converted",d.by_status.Converted)),h("h3",{},"By status"),bars(d.by_status),h("h3",{},"By source"),Object.keys(d.by_source).length?bars(d.by_source):h("p",{className:"muted"},"No leads yet. Open Workflows to load demo data, or import a CSV from Leads."))}
+const qs=()=>new URLSearchParams({...(f.search&&{search:f.search}),...(f.status&&{status:f.status}),page,per_page:10}).toString();
+async function exportCsv(){const r=await fetch("/api/leads/export.csv?"+qs(),{headers:{Authorization:"Bearer "+T}});h("a",{href:URL.createObjectURL(await r.blob()),download:"leads.csv"}).click()}
+async function leadsView(){const{d}=await api("/leads?"+qs()),total=d.total;
+ const search=h("input",{placeholder:"Search (Enter)",value:f.search,onkeydown:e=>{if(e.key==="Enter"){f.search=e.target.value;page=1;render()}}}),
+ st=h("select",{onchange:e=>{f.status=e.target.value;page=1;render()}},h("option",{value:""},"All statuses"),...STAT.map(s=>h("option",{value:s,selected:f.status===s},s)));
+ const rows=d.items.map(l=>h("tr",{},h("td",{},l.title,l.is_demo?h("span",{className:"badge"},"DEMO"):""),h("td",{},l.location||"—"),h("td",{},l.price==null?"—":Number(l.price).toLocaleString()),h("td",{},l.source||"—"),
+  h("td",{title:(l.score_detail.factors||[]).map(x=>`${x.factor}: ${x.points}/${x.max} [${x.basis}] ${x.reason}`).join("\n")},h("b",{},String(l.score))),
+  h("td",{},h("select",{onchange:async e=>{const r=await api("/leads/"+l.id,{method:"PATCH",body:{status:e.target.value}});toast(r.ok?"Status updated":r.d.error,!r.ok)}},...STAT.map(s=>h("option",{value:s,selected:l.status===s},s))))));
+ return h("div",{},h("div",{className:"row"},search,st,h("button",{className:"ghost",onclick:()=>pickCsv(async t=>{const r=await api("/leads/import",{method:"POST",raw:t});r.ok?toast(`Imported: ${r.d.created} new, ${r.d.duplicates} duplicates, ${r.d.invalid} invalid`):toast(r.d.error,true);render()})},"Import CSV"),h("button",{className:"ghost",onclick:exportCsv},"Export CSV")),
+  rows.length?h("div",{className:"tw"},h("table",{},h("tr",{},...["Title","Location","Price","Source","Score (hover)","Status"].map(x=>h("th",{},x))),...rows)):h("p",{className:"muted"},"No leads match. Load demo data or import a CSV."),
+  h("div",{className:"row"},h("button",{className:"ghost",disabled:page<=1,onclick:()=>{page--;render()}},"Prev"),h("span",{className:"muted"},`Page ${page} · ${total} leads`),h("button",{className:"ghost",disabled:page*10>=total,onclick:()=>{page++;render()}},"Next")))}
+async function wfView(){const[w,x]=await Promise.all([api("/workflows"),api("/executions")]);
+ const run=async(wf,csv)=>{const r=await api(`/workflows/${wf.id}/run`,{method:"POST",body:csv?{csv}:{}});toast(r.ok?`Run ${r.d.status}`:r.d.error,!r.ok||r.d.status==="failed");render()};
+ const wrows=w.d.items.map(wf=>h("tr",{},h("td",{},wf.name),h("td",{},wf.source+(wf.live_source?"":" (not connected)")),h("td",{},wf.enabled?"Enabled":"Disabled"),
+  h("td",{},h("button",{className:"ghost",onclick:()=>wf.source==="csv"?pickCsv(t=>run(wf,t)):run(wf)},"Run now"),h("button",{className:"ghost",onclick:async()=>{await api("/workflows/"+wf.id,{method:"PATCH",body:{enabled:!wf.enabled}});render()}},wf.enabled?"Disable":"Enable"))));
+ const erows=x.d.items.map(e=>h("tr",{},h("td",{},e.workflow_name),h("td",{className:e.status},e.status),h("td",{},e.started.replace("T"," ").slice(0,19)),h("td",{},`${e.stats.created??0} new / ${e.stats.duplicates??0} dup`),h("td",{},e.log.map(s=>`${s.ok?"✓":"✗"} ${s.step}: ${s.detail}`).join(" | ").slice(0,90)),
+  h("td",{},e.status!=="success"?h("button",{className:"ghost",onclick:async()=>{const go=async c=>{const r=await api(`/executions/${e.id}/retry`,{method:"POST",body:c?{csv:c}:{}});toast(r.ok?"Retried: "+r.d.status:r.d.error,!r.ok);render()};e.source==="csv"?pickCsv(go):go()}},"Retry"):"")));
+ return h("div",{},h("div",{className:"row"},h("button",{onclick:async()=>{const r=await api("/demo/seed",{method:"POST"});toast(r.ok?"Demo data loaded (synthetic, labelled DEMO)":r.d.error,!r.ok);render()}},"Load demo data")),
+  h("h3",{},"Workflows"),w.d.items.length?h("div",{className:"tw"},h("table",{},...wrows)):h("p",{className:"muted"},"No workflows yet."),h("h3",{},"Execution history"),x.d.items.length?h("div",{className:"tw"},h("table",{},...erows)):h("p",{className:"muted"},"No runs yet."))}
+async function notifView(){const{d}=await api("/notifications");return h("div",{},h("button",{className:"ghost",onclick:async()=>{await api("/notifications/read",{method:"POST"});render()}},"Mark all read"),d.items.length?h("div",{},...d.items.map(n=>h("p",{className:n.level==="error"?"failed":""},`${n.read?"":"● "}${n.at.slice(0,19).replace("T"," ")}  ${n.message}`))):h("p",{className:"muted"},"No notifications."))}
+async function render(){const app=$("#app");if(!T){app.replaceChildren(authView());return}
+ const nav=h("nav",{},h("b",{},"LeadPilot AI"),...[["dashboard","Dashboard"],["leads","Leads"],["workflows","Workflows"],["notifications","Notifications"]].map(([k,l])=>h("button",{className:tab===k?"on":"ghost",onclick:()=>{tab=k;page=1;render()}},l)),h("span",{className:"sp"}),h("button",{className:"ghost",onclick:logout},"Sign out"));
+ const v=await({dashboard:dashView,leads:leadsView,workflows:wfView,notifications:notifView}[tab])();app.replaceChildren(nav,h("main",{},v))}
+render();
